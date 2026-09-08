@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bookmark Filter browser harness</title>
+  <link rel="stylesheet" href="/popup/popup.css">
+  <link rel="stylesheet" href="/content/styles.css">
+  <style>
+    body { width: auto; max-width: 960px; margin: 0 auto; padding: 20px; font: 14px system-ui, sans-serif; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    .toolbar button, .toolbar select { padding: 8px; }
+    #fixture { display: grid; gap: 8px; max-width: 560px; }
+    #fixture > * { border: 1px solid #bbb; padding: 16px; background: #f4f4f4; }
+    #harness-status { min-height: 1.4em; }
+    #action-status { min-height: 1.4em; color: #555; }
+    #popup-shell { border: 1px solid #aaa; max-width: 340px; margin-top: 18px; }
+    .simulation-note { background: #fff8df; padding: 8px; }
+    .surface-note { background: #eef6ff; padding: 8px; }
+    .error { color: #a51d2d; }
+    .ready { color: #126b35; }
+  </style>
+</head>
+<body>
+  <h1>Bookmark Filter browser harness</h1>
+  <p class="simulation-note">Simulated Chrome APIs only. Synthetic and live-derived shapes below are test data; no real bookmark, native extension, or native Chrome claim is made. This loopback page does not access browser bookmarks, profiles, or extension installation.</p>
+  <div class="toolbar" aria-label="Harness actions">
+    <label>Site <select id="site-choice"><option value="pornhub">Pornhub</option><option value="xvideos">XVideos</option><option value="xhamster">xHamster</option><option value="literotica">Literotica</option></select></label>
+    <label id="surface-choice-wrap" hidden>Literotica surface <select id="surface-choice"><option value="search">Search</option><option value="tags">Tags</option><option value="top">Top stories</option><option value="similar">Similar stories</option></select></label>
+    <button id="add-bookmarked" type="button">Add bookmarked card</button>
+    <button id="add-unbookmarked" type="button">Add unbookmarked card</button>
+    <button id="change-bookmark" type="button">Toggle bookmark on last card</button>
+    <button id="recycle" type="button">Recycle last card URL</button>
+    <button id="remove-card" type="button">Remove last card</button>
+    <button id="toggle-filter" type="button">Toggle site setting</button>
+    <button id="toggle-reveal" type="button">Toggle popup reveal</button>
+    <button id="simulate-failure" type="button">Simulate match failure/recovery</button>
+  </div>
+  <p id="harness-status" role="status">Loading actual production content script…</p>
+  <p id="harness-action-status" role="status">Ready for simulated actions.</p>
+  <section id="fixture" aria-label="Synthetic recommendation cards"></section>
+  <section id="popup-shell" aria-label="Actual popup JavaScript">
+    <main aria-labelledby="popup-title">
+      <h2 id="popup-title">Actual popup surface</h2>
+      <p id="page" role="status">Checking this page…</p>
+      <p id="surface-status" class="note" role="status"></p>
+      <p id="index-status" class="note" role="status">Checking bookmark index…</p>
+      <fieldset id="sites"><legend>Filtering by site</legend></fieldset>
+      <p id="settings-status" class="note" role="status" aria-live="polite"></p>
+      <p id="count" aria-live="polite">Hidden on this page: —</p>
+      <button id="show" type="button" disabled>Show hidden on this page</button>
+      <button id="retry" type="button" hidden>Retry</button>
+      <p id="action-status" class="note" role="status" aria-live="polite"></p>
+      <p id="incognito" class="note"></p>
+    </main>
+  </section>
+  <script src="/shared/url-utils.js"></script>
+  <script src="/content/adapters.js"></script>
+  <script>
+    (async function () {
+      const fixture = document.querySelector("#fixture");
+      const harnessStatus = document.querySelector("#harness-status");
+      const actionStatus = document.querySelector("#harness-action-status");
+      const siteChoice = document.querySelector("#site-choice");
+      const surfaceChoiceWrap = document.querySelector("#surface-choice-wrap");
+      const surfaceChoice = document.querySelector("#surface-choice");
+      const siteNames = { pornhub: "Pornhub", xvideos: "XVideos", xhamster: "xHamster", literotica: "Literotica" };
+      const hosts = { pornhub: "www.pornhub.com", xvideos: "www.xvideos.com", xhamster: "www.xhamster.com", literotica: "www.literotica.com" };
+      const selectors = {
+        pornhub: { tag: "article", className: "pcVideoListItem", data: "data-video-id" },
+        xvideos: { tag: "div", className: "thumb-block", data: "data-id" },
+        xhamster: { tag: "article", className: "video-card", data: "data-video-id" }
+      };
+      const bookmarks = new Set();
+      const contentListeners = [];
+      const enabledBySite = loadPreferences();
+      let nextId = 1;
+      let revision = 0;
+      let matchingFailure = false;
+      let syntheticLocation;
+      let indexState = "ready";
+
+      function loadPreferences() {
+        const defaults = { pornhub: true, xvideos: true, xhamster: true, literotica: true };
+        try {
+          const stored = JSON.parse(sessionStorage.getItem("bookmark-filter-harness-enabled") || "null");
+          if (stored && typeof stored === "object") for (const site of Object.keys(defaults)) if (typeof stored[site] === "boolean") defaults[site] = stored[site];
+        } catch (_) { /* a fresh simulated profile is acceptable */ }
+        return defaults;
+      }
+
+      function savePreferences() {
+        try { sessionStorage.setItem("bookmark-filter-harness-enabled", JSON.stringify(enabledBySite)); } catch (_) { /* status remains visible */ }
+      }
+
+      function selectedSite() { return siteChoice.value; }
+      function selectedSurface() { return surfaceChoice.value; }
+      function syntheticPage(site) {
+        if (site !== "literotica") return new URL(`https://${hosts[site]}/synthetic-feed?site=${site}`);
+        if (selectedSurface() === "search") return new URL("https://search.literotica.com/?query=sample");
+        if (selectedSurface() === "tags") return new URL("https://tags.literotica.com/sample/");
+        if (selectedSurface() === "top") return new URL("https://www.literotica.com/top/stories");
+        return new URL("https://www.literotica.com/s/sample");
+      }
+      function sender() { return { id: "simulated", frameId: 0, url: syntheticLocation.href }; }
+      function siteKey(url) { return BookmarkFilterAdapters.normalizeBookmarkUrl(url); }
+      function urlFor(site, id) {
+        if (site === "pornhub") return `https://www.pornhub.com/video/synthetic-${id}`;
+        if (site === "xvideos") return `https://www.xvideos.com/video${id}/synthetic`;
+        if (site === "xhamster") return `https://www.xhamster.com/videos/synthetic-${id}.html`;
+        return `https://www.literotica.com/s/synthetic-${id}/chapter-1`;
+      }
+
+      function literoticaTarget() {
+        if (selectedSurface() !== "similar") return fixture;
+        let root = fixture.querySelector(":scope > ._widget_list_1m9b4_1");
+        if (!root) {
+          root = document.createElement("div");
+          root.className = "_widget_list_1m9b4_1";
+          fixture.append(root);
+        }
+        return root;
+      }
+
+      function createLiteroticaCard(url, id) {
+        const surface = selectedSurface();
+        const card = document.createElement(surface === "search" ? "div" : surface === "similar" ? "div" : "article");
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.textContent = `Synthetic ${surface} story ${id}`;
+        if (surface === "search") {
+          card.className = "panel ai_gJ";
+          const panel = document.createElement("div"); panel.className = "ai_iG";
+          anchor.className = "ai_ii";
+          const heading = document.createElement("h4"); heading.append(anchor);
+          panel.append(heading); card.append(panel);
+        } else if (surface === "tags" || surface === "top") {
+          card.className = `_card_ohlxb_16${surface === "top" ? " _most_read" : ""}`;
+          const content = document.createElement("div"); content.className = "_content_ohlxb_56";
+          const heading = document.createElement("h3"); heading.className = "_title_ohlxb_52";
+          anchor.className = "_title_link_ohlxb_67";
+          heading.append(anchor); content.append(heading); card.append(content);
+        } else {
+          card.className = "_item_1m9b4_7";
+          anchor.className = "_widget_link_1m9b4_62";
+          card.append(anchor);
+        }
+        return card;
+      }
+
+      function settings() { return { enabledBySite: { ...enabledBySite } }; }
+
+      function dispatchToContent(message) {
+        if (message?.type === "RETRY_FILTER") matchingFailure = false;
+        let response;
+        for (const listener of contentListeners.slice()) {
+          let replied = false;
+          listener(message, sender(), (value) => { if (!replied) { replied = true; response = value; } });
+        }
+        if (message?.type === "RETRY_FILTER" && response == null) {
+          for (const listener of contentListeners.slice()) listener({ type: "BOOKMARKS_CHANGED" }, sender(), () => {});
+          for (const listener of contentListeners.slice()) listener({ type: "GET_PAGE_STATUS" }, sender(), (value) => { response = value; });
+        }
+        return Promise.resolve(response ?? null);
+      }
+
+      function matchingResponse(message) {
+        if (matchingFailure) return { error: "simulated_match_failure" };
+        const site = message.siteId;
+        const keys = bookmarks;
+        revision += 1;
+        return {
+          indexReady: true,
+          enabled: enabledBySite[site] !== false,
+          revision,
+          matches: (message.candidates || []).map((candidate) => {
+            const normalized = BookmarkFilterAdapters.normalizeBookmarkUrl(candidate.url);
+            return { token: candidate.token, matched: Boolean(normalized && keys.has(`${site}:${normalized}`)) };
+          })
+        };
+      }
+
+      function notifySettings(site) {
+        dispatchToContent({ type: "SETTINGS_CHANGED", enabledBySite: { [site]: enabledBySite[site] } });
+      }
+
+      function runtimeMessage(message) {
+        if (message?.type === "GET_PAGE_MATCHES") return Promise.resolve(matchingResponse(message));
+        if (message?.type === "GET_SETTINGS") return Promise.resolve(settings());
+        if (message?.type === "GET_INDEX_STATUS") {
+          if (message.retry === true) {
+            indexState = "building";
+            queueMicrotask(() => { indexState = "ready"; });
+          }
+          const status = indexState === "error" ? "error" : indexState === "building" ? "building" : "ready";
+          return Promise.resolve({ ready: status === "ready", total: status === "ready" ? bookmarks.size : 0, revision, status, errorCode: status === "error" ? "index_unavailable" : null });
+        }
+        if (message?.type === "SET_SITE_ENABLED" && typeof message.enabled === "boolean" && enabledBySite[message.siteId] !== undefined) {
+          enabledBySite[message.siteId] = message.enabled;
+          savePreferences();
+          notifySettings(message.siteId);
+          return Promise.resolve(settings());
+        }
+        return Promise.resolve({ error: "unsupported_simulated_runtime_message" });
+      }
+
+      window.chrome = {
+        runtime: {
+          id: "simulated",
+          onMessage: { addListener(listener) { contentListeners.push(listener); } },
+          sendMessage: runtimeMessage
+        },
+        tabs: {
+          query: (_query, callback) => callback([{ id: 1, url: syntheticLocation.href }]),
+          sendMessage: (_tabId, message) => dispatchToContent(message)
+        },
+        extension: { isAllowedIncognitoAccess: async () => true }
+      };
+
+      function setHarnessStatus(text, isError = false) {
+        harnessStatus.textContent = text;
+        harnessStatus.className = isError ? "error" : "ready";
+      }
+
+      async function refreshActualStatus() {
+        const response = await dispatchToContent({ type: "GET_PAGE_STATUS" });
+        if (!response) { setHarnessStatus("ERROR: actual content listener did not answer", true); return; }
+        setHarnessStatus(`Actual content: ${response.status}; site=${response.siteId}; hidden=${response.hiddenCount}; filtering=${response.enabled}; reveal=${response.showHidden}`);
+      }
+
+      function addCard(isBookmarked) {
+        const site = selectedSite();
+        const id = String(nextId++);
+        const url = urlFor(site, id);
+        const shape = selectors[site];
+        const card = site === "literotica" ? createLiteroticaCard(url, id) : document.createElement(shape.tag);
+        if (site !== "literotica") {
+          card.className = shape.className;
+          if (shape.data) card.setAttribute(shape.data, `synthetic-${id}`);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.textContent = `Synthetic ${isBookmarked ? "bookmarked" : "unbookmarked"} card ${id}`;
+          card.append(anchor);
+        }
+        if (isBookmarked) bookmarks.add(`${site}:${siteKey(url)}`);
+        literoticaTarget().append(card);
+        actionStatus.textContent = `Added synthetic ${isBookmarked ? "bookmarked" : "unbookmarked"} ${siteNames[site]} card ${id}; no real bookmark claim.`;
+        refreshActualStatus();
+      }
+
+      function lastCard() {
+        const target = selectedSite() === "literotica" ? literoticaTarget() : fixture;
+        return target.lastElementChild;
+      }
+
+      function toggleBookmark() {
+        const card = lastCard();
+        if (!card) { actionStatus.textContent = "ERROR: add a card first."; return; }
+        const site = selectedSite();
+        const key = `${site}:${siteKey(card.querySelector("a").href)}`;
+        if (bookmarks.has(key)) bookmarks.delete(key); else bookmarks.add(key);
+        dispatchToContent({ type: "BOOKMARKS_CHANGED" });
+        actionStatus.textContent = "Synthetic bookmark membership changed; dispatched actual BOOKMARKS_CHANGED.";
+        refreshActualStatus();
+      }
+
+      function recycleCard() {
+        const card = lastCard();
+        if (!card) { actionStatus.textContent = "ERROR: add a card first."; return; }
+        card.querySelector("a").href = urlFor(selectedSite(), `recycled-${nextId++}`);
+        actionStatus.textContent = "Last card href recycled; production attribute observation will re-check it.";
+        refreshActualStatus();
+      }
+
+      function removeCard() {
+        const card = lastCard();
+        if (!card) { actionStatus.textContent = "ERROR: add a card first."; return; }
+        card.remove();
+        actionStatus.textContent = "Last card removed; production mutation handling should restore state.";
+        refreshActualStatus();
+      }
+
+      function clickPopup(selector, unavailableText) {
+        const element = document.querySelector(selector);
+        if (!element || element.disabled) { actionStatus.textContent = unavailableText; return; }
+        element.click();
+        actionStatus.textContent = `Clicked actual popup control ${selector}.`;
+      }
+
+      siteChoice.value = new URLSearchParams(location.search).get("site") || "pornhub";
+      surfaceChoice.value = new URLSearchParams(location.search).get("surface") || "search";
+      indexState = new URLSearchParams(location.search).get("index") === "error" ? "error" : "ready";
+      function reloadHarness() {
+        const query = new URLSearchParams({ site: siteChoice.value });
+        if (siteChoice.value === "literotica") query.set("surface", surfaceChoice.value);
+        location.href = `${location.pathname}?${query}`;
+      }
+      function updateSurfaceControl() { surfaceChoiceWrap.hidden = siteChoice.value !== "literotica"; }
+      updateSurfaceControl();
+      siteChoice.addEventListener("change", () => { updateSurfaceControl(); reloadHarness(); });
+      surfaceChoice.addEventListener("change", reloadHarness);
+      document.querySelector("#add-bookmarked").onclick = () => addCard(true);
+      document.querySelector("#add-unbookmarked").onclick = () => addCard(false);
+      document.querySelector("#change-bookmark").onclick = toggleBookmark;
+      document.querySelector("#recycle").onclick = recycleCard;
+      document.querySelector("#remove-card").onclick = removeCard;
+      document.querySelector("#toggle-filter").onclick = () => clickPopup(`#site-${selectedSite()}`, "ERROR: actual popup site toggle is not ready.");
+      document.querySelector("#toggle-reveal").onclick = () => clickPopup("#show", "ERROR: actual popup reveal is not ready.");
+      document.querySelector("#simulate-failure").onclick = () => {
+        matchingFailure = !matchingFailure;
+        dispatchToContent({ type: "BOOKMARKS_CHANGED" });
+        actionStatus.textContent = matchingFailure ? "Simulated matching failure; production content should fail open." : "Matching recovered; production content should retry/rescan.";
+        refreshActualStatus();
+      };
+
+      syntheticLocation = syntheticPage(selectedSite());
+      const contentSource = await fetch("/content/content-script.js").then((result) => {
+        if (!result.ok) throw new Error(`content script HTTP ${result.status}`);
+        return result.text();
+      });
+      window.Function("location", contentSource)(syntheticLocation);
+      if (contentListeners.length !== 1) throw new Error(`expected one production content listener, got ${contentListeners.length}`);
+
+      const popupSource = await fetch("/popup/popup.js").then((result) => {
+        if (!result.ok) throw new Error(`popup script HTTP ${result.status}`);
+        return result.text();
+      });
+      window.Function(popupSource)();
+      setHarnessStatus(`Actual production content loaded for ${siteNames[selectedSite()]} (${selectedSite() === "literotica" ? selectedSurface() : "synthetic feed"}); no native extension claim.`);
+      await refreshActualStatus();
+      setInterval(refreshActualStatus, 500);
+    })().catch((error) => {
+      const target = document.querySelector("#harness-status");
+      target.textContent = `ERROR: harness setup failed — ${error.message}`;
+      target.className = "error";
+    });
+  </script>
+</body>
+</html>

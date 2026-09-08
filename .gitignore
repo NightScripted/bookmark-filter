@@ -1,0 +1,22 @@
+# Dependencies and generated output
+node_modules/
+dist/
+build/
+coverage/
+*.crx
+*.zip
+
+# Browser data and personal exports
+*.bookmark
+bookmarks*.html
+bookmark-export*.json
+browser-data/
+chrome-profile/
+user-data/
+
+# Local/editor files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

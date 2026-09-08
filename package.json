@@ -1,0 +1,13 @@
+{
+  "name": "bookmark-filter",
+  "version": "0.2.0",
+  "private": true,
+  "description": "MV3 bookmark filter runtime and simulated browser harness",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "harness": "node scripts/browser-harness-server.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

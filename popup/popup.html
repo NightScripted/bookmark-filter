@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bookmark Filter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main aria-labelledby="title">
+    <h1 id="title">Bookmark Filter</h1>
+    <p id="page" role="status">Checking this page…</p>
+    <p id="surface-status" class="note" role="status"></p>
+    <p id="index-status" class="note" role="status">Checking bookmark index…</p>
+    <fieldset id="sites">
+      <legend>Filtering by site</legend>
+    </fieldset>
+    <p id="settings-status" class="note" role="status" aria-live="polite"></p>
+    <p id="count" aria-live="polite">Hidden on this page: —</p>
+    <button id="show" type="button" disabled>Show hidden on this page</button>
+    <button id="retry" type="button" hidden>Retry</button>
+    <p id="action-status" class="note" role="status" aria-live="polite"></p>
+    <p id="incognito" class="note"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

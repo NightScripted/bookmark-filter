@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Bookmark Filter",
+  "version": "0.2.0",
+  "description": "Hide bookmarked content from supported site feeds and recommendations.",
+  "minimum_chrome_version": "110",
+  "permissions": ["bookmarks", "storage"],
+  "host_permissions": [
+    "https://pornhub.com/*", "https://*.pornhub.com/*",
+    "https://xvideos.com/*", "https://*.xvideos.com/*",
+    "https://xhamster.com/*", "https://*.xhamster.com/*",
+    "https://literotica.com/*", "https://*.literotica.com/*"
+  ],
+  "background": { "service_worker": "background/service-worker.js" },
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "32": "assets/icons/icon32.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Bookmark Filter",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "24": "assets/icons/icon24.png",
+      "32": "assets/icons/icon32.png"
+    }
+  },
+  "incognito": "split",
+  "content_scripts": [{
+    "matches": [
+      "https://pornhub.com/*", "https://*.pornhub.com/*",
+      "https://xvideos.com/*", "https://*.xvideos.com/*",
+      "https://xhamster.com/*", "https://*.xhamster.com/*",
+      "https://literotica.com/*", "https://*.literotica.com/*"
+    ],
+    "run_at": "document_idle",
+    "css": ["content/styles.css"],
+    "js": ["shared/url-utils.js", "content/adapters.js", "content/content-script.js"]
+  }]
+}
