@@ -70,6 +70,10 @@ Use a separate Chrome profile and disposable, user-selected synthetic bookmarks.
 
 This checklist is not an end-to-end automation claim, and it does not claim that all four sites have native live support. See [docs/verification.md](docs/verification.md) for the current evidence and provenance matrix.
 
+## Roadmap
+
+Development priorities and follow-up work are tracked in [the improvement roadmap](docs/roadmap.md). The recommended next release focuses on native verification, URL normalization, disabled-state efficiency, bookmark-folder selection, and hide/dim modes.
+
 ## References
 
 - [Chrome extensions: Hello World](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world)
