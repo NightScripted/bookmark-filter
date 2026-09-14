@@ -2,6 +2,10 @@
 
 Bookmark Filter is a plain-JavaScript Manifest V3 extension. It hides already-bookmarked, recognized result cards from supported pages; it never changes bookmarks.
 
+First-phase creator highlighting also marks eligible cards that contain an explicit supported same-site creator/profile link for a bookmarked creator. The card receives a modest accent outline and a real `Bookmarked creator` badge; saved media still takes precedence for hiding, and reveal mode may show `Saved · Bookmarked creator`. Creator matching is URL-derived and does not use names, history, timestamps, or persistent creator data.
+
+Creator route families are intentionally narrow. Pornhub MODEL bookmarks support the direct `/model/<handle>` route and its `/videos`, `/clips`, `/photos`, `/gifs`, `/stream`, `/playlists`, and `/about` tabs as one identity; each card still needs an explicit creator link. XVideos and xHamster creator routes remain experimental. Literotica supports `/authors/<handle>` plus its `/works` and `/works/stories` variants as one identity; the legacy synthetic-only `/author/<handle>` form is intentionally omitted.
+
 The target is desktop Chrome. “New” means unbookmarked; reposts or copies with different identifiers remain visible. Cards may briefly appear before filtering completes.
 
 The extension runtime has no network requests, server, or telemetry, and never writes bookmarks. The loopback harness server is development-only and is not part of the extension runtime.
@@ -28,11 +32,11 @@ npm.cmd run harness
 
 The portable Node path is for direct test invocation when `node` is not on PATH: `& 'C:\Users\zacha\Developer\tools\node\node-v24.20.0-win-x64\node.exe' --test "test/*.test.js"` in PowerShell. The `npm.cmd` commands above assume npm is available on PATH. Rebuild derived icons only when their source artwork changes: `powershell -ExecutionPolicy Bypass -File scripts/build-icons.ps1`.
 
-Run the harness only after its loopback server is ready, then open `http://127.0.0.1:4177/?site=pornhub`; changing the site selector reloads the page with a clean production content-script instance. For the Literotica-derived surfaces use `?site=literotica&surface=search`, `tags`, `top`, or `similar`; use `&index=error` to exercise the popup retry state. The harness uses mocked Chrome APIs, synthetic or live-derived adapter markup, production content CSS, the actual `content-script.js`, and the actual `popup.js`. Its bookmark matching calls the production normalizer, and its visible status comes from actual runtime message handlers. The local automated connected tests are a separate Node/jsdom/VM production-message bridge; browser-harness loopback checks are a separate simulated UI category. Neither category is native verification; keep their results separate from native claims. Native extension loading, service-worker sleep/wake, and incognito behavior require manual verification because `chrome://extensions` automation is blocked.
+Run the harness only after its loopback server is ready, then open `http://127.0.0.1:4177/?site=pornhub`; changing the site selector reloads the page with a clean production content-script instance. For the Literotica-derived surfaces use `?site=literotica&surface=search`, `tags`, `top`, or `similar`; use `&index=error` to exercise the popup retry state. The harness includes synthetic creator-profile bookmarks and explicit creator links; use **Add creator card** and **Toggle creator bookmark** to exercise creator-only matching. The harness uses mocked Chrome APIs, synthetic or live-derived adapter markup, production content CSS, the actual `content-script.js`, and the actual `popup.js`. Its bookmark matching calls the production normalizer, and its visible status comes from actual runtime message handlers. The local automated connected tests are a separate Node/jsdom/VM production-message bridge; browser-harness loopback checks are a separate simulated UI category. Neither category is native verification; keep their results separate from native claims. Native extension loading, service-worker sleep/wake, and incognito behavior require manual verification because `chrome://extensions` automation is blocked.
 
 ## Verification status
 
-As of 2026-09-08, the final local suite passed 58/58 tests with 0 skipped and 0 failed in 14.17 seconds. Production and harness syntax checks passed. Focused scanner validation passed 6/6, including the 10,000-card stress case and the fewer-than-1,000 `Node.contains` guard. Chrome loopback smoke checks passed for all four Literotica surfaces and the three legacy synthetic surfaces; search control failure/recovery also passed. These are local or simulated results, not native live-site verification. Native Chrome behavior remains unverified, the three legacy sites remain live-unverified, and homepage/news/promotion surfaces remain ambiguous.
+Saved Pornhub HTML captures were inspected on 2026-09-12 and reduced to sanitized fixtures with adapter and connected production coverage. The local suite and production syntax checks are reported in [the verification matrix](docs/verification.md); live/native Pornhub behavior remains unverified. The capture counts and fail-open boundaries are documented in [the Pornhub capture evidence](docs/pornhub-captures.md).
 
 ## What is stored
 
@@ -42,13 +46,13 @@ The extension stores per-site enabled/disabled preferences only. Temporary revea
 
 | Site | Status | Boundary |
 | --- | --- | --- |
-| Literotica search | DOM inspected; harness fixture added | `div.panel.ai_gJ` cards with `a.ai_ii > h4`; only recognized `/s/` links are eligible. |
-| Literotica tags | DOM inspected; harness fixture added | `article._card_ohlxb_16` content cards with `_content_ohlxb_56`, `_title_ohlxb_52`, and `_title_link_ohlxb_67`. |
-| Literotica top stories | DOM inspected; harness fixture added | Same article card shape with the additional `_most_read` class. |
-| Literotica similar stories | DOM inspected; harness fixture added | `div._widget_list_1m9b4_1 > div._item_1m9b4_7 > a._widget_link_1m9b4_62`. |
+| Literotica search | 2026-09-12 live author evidence; harness fixture added | `div.panel.ai_gJ` with `div.ai_iG > a.ai_ii > h4`; creator authors use `/authors/<handle>/works`. Only recognized `/s/` links are eligible. |
+| Literotica tags | 2026-09-12 live `_1epno_` evidence; `_ohlxb_` is historical | `article._card_1epno_16` with `_content_1epno_58`, `_title_1epno_54`, and `_title_link_1epno_69`. |
+| Literotica top stories | 2026-09-12 live `_1epno_` evidence; `_ohlxb_` is historical | Same `_1epno_` article/content/title shape plus `_most_read_1epno_670`. |
+| Literotica similar stories | Historical detail evidence only; current `_item_1m9b4_7` not observed in this pass | Legacy `div._widget_list_1m9b4_1 > div._item_1m9b4_7 > a._widget_link_1m9b4_62` remains experimental. |
 | Literotica series navigation | Intentionally unfiltered | `div._data_list_pv6fa_1 > div._item_pv6fa_7` is navigation, not a content-card target. |
 | Literotica homepage/news/promotions | Unverified | Ambiguous structures remain visible; no verified claim is made. |
-| Pornhub | Experimental legacy | Narrow legacy selectors and synthetic URL fixtures only; live layout safety was previously blocked. |
+| Pornhub | Saved HTML inspected; live/native unverified | `/`, `/video/search`, and `/model/<handle>` captures support the existing narrow card selector. MODEL tab aliases normalize to the same creator; cards require explicit creator anchors and homepage context is never inherited. |
 | XVideos | Experimental legacy | Narrow legacy selectors and synthetic URL fixtures only; live layout safety was previously blocked. |
 | xHamster | Experimental legacy | Narrow legacy selectors and synthetic URL fixtures only; live layout safety was previously blocked. |
 
@@ -66,6 +70,7 @@ Use a separate Chrome profile and disposable, user-selected synthetic bookmarks.
 - Repeat the settings, reveal, dynamic insertion, and restart checks in incognito after enabling **Allow in incognito** for the unpacked extension.
 - Verify recovery by reloading or disabling the extension and confirm existing preferences still load.
 - In the popup, confirm index states are reported as building/ready/error without raw Chrome diagnostics; use **Retry** only for an error state.
+- Add a synthetic creator card, bookmark and unbookmark its creator, and verify the badge/outline, creator count, saved-card precedence, dynamic insertion, recycling, and disable/re-enable cleanup.
 - After source changes, reload the unpacked extension in `chrome://extensions` and reload already-open supported tabs. Rebuild icons only with the build script when artwork changes.
 
 This checklist is not an end-to-end automation claim, and it does not claim that all four sites have native live support. See [docs/verification.md](docs/verification.md) for the current evidence and provenance matrix.

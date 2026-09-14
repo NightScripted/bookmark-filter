@@ -22,6 +22,23 @@ test("popup-only startup status initiates a cold rebuild and returns ready metad
   assert.equal(instance.treeReads, 1);
 });
 
+test("worker indexes creators independently and keeps the earliest duplicate date", async () => {
+  const instance = worker([{ children: [
+    { id: "late", dateAdded: 30, url: "https://www.pornhub.com/users/Casey" },
+    { id: "early", dateAdded: 10, url: "https://www.pornhub.com/users/Casey" },
+    { url: "https://www.pornhub.com/video/title-saved" }
+  ] }]);
+  const response = await instance.context.BookmarkFilterBackground.pageMatches({ type: "GET_PAGE_MATCHES", siteId: "pornhub", candidates: [{ token: "x", url: "https://www.pornhub.com/video/title-new", creatorUrls: ["https://www.pornhub.com/users/Casey"] }] }, sender);
+  assert.equal(response.matches[0].mediaBookmarked, false);
+  assert.equal(response.matches[0].creatorBookmarked, true);
+  const invalidMedia = await instance.context.BookmarkFilterBackground.pageMatches({ type: "GET_PAGE_MATCHES", siteId: "pornhub", candidates: [{ token: "invalid", url: "https://www.pornhub.com/users/Other", creatorUrls: ["https://www.pornhub.com/users/Casey"] }] }, sender);
+  assert.equal(invalidMedia.matches[0].creatorBookmarked, false);
+  const index = instance.context.BookmarkFilterBackground.buildIndex([{ children: [{ id: "late", dateAdded: 30, url: "https://www.pornhub.com/users/Casey" }, { id: "early", dateAdded: 10, url: "https://www.pornhub.com/users/Casey" }] }]);
+  assert.equal(index.total, 0);
+  assert.equal(index.creatorTotal, 1);
+  assert.equal(index.creatorsBySite.pornhub.get("pornhub:creator:users:Casey").dateAdded, 10);
+});
+
 test("concurrent status polls share the cold rebuild", async () => {
   const instance = worker([{ children: [] }]);
   let release;

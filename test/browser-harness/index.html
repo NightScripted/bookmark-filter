@@ -28,8 +28,11 @@
     <label>Site <select id="site-choice"><option value="pornhub">Pornhub</option><option value="xvideos">XVideos</option><option value="xhamster">xHamster</option><option value="literotica">Literotica</option></select></label>
     <label id="surface-choice-wrap" hidden>Literotica surface <select id="surface-choice"><option value="search">Search</option><option value="tags">Tags</option><option value="top">Top stories</option><option value="similar">Similar stories</option></select></label>
     <button id="add-bookmarked" type="button">Add bookmarked card</button>
+    <button id="add-creator" type="button">Add creator card</button>
     <button id="add-unbookmarked" type="button">Add unbookmarked card</button>
     <button id="change-bookmark" type="button">Toggle bookmark on last card</button>
+    <button id="toggle-creator" type="button">Toggle creator bookmark</button>
+    <button id="recycle-creator" type="button">Recycle last creator href</button>
     <button id="recycle" type="button">Recycle last card URL</button>
     <button id="remove-card" type="button">Remove last card</button>
     <button id="toggle-filter" type="button">Toggle site setting</button>
@@ -132,18 +135,30 @@
           card.className = "panel ai_gJ";
           const panel = document.createElement("div"); panel.className = "ai_iG";
           anchor.className = "ai_ii";
-          const heading = document.createElement("h4"); heading.append(anchor);
-          panel.append(heading); card.append(panel);
+          const heading = document.createElement("h4"); heading.textContent = `Synthetic ${surface} story ${id}`;
+          anchor.textContent = ""; anchor.append(heading);
+          panel.append(anchor); card.append(panel);
         } else if (surface === "tags" || surface === "top") {
-          card.className = `_card_ohlxb_16${surface === "top" ? " _most_read" : ""}`;
-          const content = document.createElement("div"); content.className = "_content_ohlxb_56";
-          const heading = document.createElement("h3"); heading.className = "_title_ohlxb_52";
-          anchor.className = "_title_link_ohlxb_67";
-          heading.append(anchor); content.append(heading); card.append(content);
+          card.className = `_card_1epno_16${surface === "top" ? " _most_read_1epno_670" : ""}`;
+          const modern = true;
+          const content = document.createElement("div"); content.className = modern ? "_content_1epno_58" : "_content_ohlxb_56";
+          const heading = document.createElement("h3"); heading.className = modern ? "_title_1epno_54" : "_title_ohlxb_52";
+          anchor.className = modern ? "_title_link_1epno_69" : "_title_link_ohlxb_67";
+          heading.append(anchor); content.append(heading);
+          const meta = document.createElement("div"); meta.className = modern ? "_meta_1epno_113" : "_meta_ohlxb_113";
+          const author = document.createElement("a"); author.className = modern ? "_author_link_1epno_210" : "_author_link_ohlxb_210"; author.href = creatorUrlFor("literotica", id); author.textContent = "Synthetic creator";
+          meta.append(author); content.append(meta); card.append(content);
         } else {
           card.className = "_item_1m9b4_7";
           anchor.className = "_widget_link_1m9b4_62";
           card.append(anchor);
+          const author = document.createElement("a"); author.href = creatorUrlFor("literotica", id); author.textContent = "Synthetic creator";
+          card.append(author);
+        }
+        if (surface === "search") {
+          const meta = document.createElement("div");
+          const author = document.createElement("a"); author.className = "ai_in ai_il"; author.href = creatorUrlFor("literotica", id); author.textContent = "Synthetic creator";
+          meta.append(author); card.append(meta);
         }
         return card;
       }
@@ -174,8 +189,16 @@
           enabled: enabledBySite[site] !== false,
           revision,
           matches: (message.candidates || []).map((candidate) => {
-            const normalized = BookmarkFilterAdapters.normalizeBookmarkUrl(candidate.url);
-            return { token: candidate.token, matched: Boolean(normalized && keys.has(`${site}:${normalized}`)) };
+            const candidateAdapter = BookmarkFilterAdapters.forUrl(candidate.url);
+            const normalized = candidateAdapter?.id === site ? candidateAdapter.normalizeBookmarkUrl(candidate.url) : null;
+            const mediaBookmarked = Boolean(normalized && keys.has(`${site}:${normalized}`));
+            const creatorBookmarked = Boolean(normalized && (candidate.creatorUrls || []).some((creatorUrl) => {
+              const creatorAdapter = BookmarkFilterAdapters.forUrl(creatorUrl);
+              if (!creatorAdapter || creatorAdapter.id !== site) return false;
+              const creatorKey = creatorAdapter.normalizeCreatorUrl(creatorUrl);
+              return Boolean(creatorKey && keys.has(`${site}:${creatorKey}`));
+            }));
+            return { token: candidate.token, matched: mediaBookmarked, mediaBookmarked, creatorBookmarked };
           })
         };
       }
@@ -193,7 +216,7 @@
             queueMicrotask(() => { indexState = "ready"; });
           }
           const status = indexState === "error" ? "error" : indexState === "building" ? "building" : "ready";
-          return Promise.resolve({ ready: status === "ready", total: status === "ready" ? bookmarks.size : 0, revision, status, errorCode: status === "error" ? "index_unavailable" : null });
+          return Promise.resolve({ ready: status === "ready", total: status === "ready" ? Array.from(bookmarks).filter((key) => !key.includes(":creator:")).length : 0, creatorTotal: status === "ready" ? Array.from(bookmarks).filter((key) => key.includes(":creator:")).length : 0, revision, status, errorCode: status === "error" ? "index_unavailable" : null });
         }
         if (message?.type === "SET_SITE_ENABLED" && typeof message.enabled === "boolean" && enabledBySite[message.siteId] !== undefined) {
           enabledBySite[message.siteId] = message.enabled;
@@ -225,10 +248,17 @@
       async function refreshActualStatus() {
         const response = await dispatchToContent({ type: "GET_PAGE_STATUS" });
         if (!response) { setHarnessStatus("ERROR: actual content listener did not answer", true); return; }
-        setHarnessStatus(`Actual content: ${response.status}; site=${response.siteId}; hidden=${response.hiddenCount}; filtering=${response.enabled}; reveal=${response.showHidden}`);
+        setHarnessStatus(`Actual content: ${response.status}; site=${response.siteId}; hidden=${response.hiddenCount}; creators=${response.creatorMatchedCount || 0}; highlighted=${response.highlightedCount || 0}; filtering=${response.enabled}; reveal=${response.showHidden}`);
       }
 
-      function addCard(isBookmarked) {
+      function creatorUrlFor(site, id) {
+        if (site === "pornhub") return `https://${hosts[site]}/users/synthetic-creator-${id}`;
+        if (site === "xvideos") return `https://${hosts[site]}/profiles/synthetic-creator-${id}`;
+        if (site === "xhamster") return `https://${hosts[site]}/creators/synthetic-creator-${id}`;
+        return `https://www.literotica.com/authors/synthetic-creator-${id}/works`;
+      }
+
+      function addCard(isBookmarked, creatorBookmarked = false) {
         const site = selectedSite();
         const id = String(nextId++);
         const url = urlFor(site, id);
@@ -241,8 +271,13 @@
           anchor.href = url;
           anchor.textContent = `Synthetic ${isBookmarked ? "bookmarked" : "unbookmarked"} card ${id}`;
           card.append(anchor);
+          const creatorAnchor = document.createElement("a");
+          creatorAnchor.href = creatorUrlFor(site, id);
+          creatorAnchor.textContent = "Synthetic creator";
+          card.append(creatorAnchor);
         }
         if (isBookmarked) bookmarks.add(`${site}:${siteKey(url)}`);
+        if (creatorBookmarked) bookmarks.add(`${site}:${BookmarkFilterAdapters.normalizeCreatorUrl(creatorUrlFor(site, id))}`);
         literoticaTarget().append(card);
         actionStatus.textContent = `Added synthetic ${isBookmarked ? "bookmarked" : "unbookmarked"} ${siteNames[site]} card ${id}; no real bookmark claim.`;
         refreshActualStatus();
@@ -264,11 +299,33 @@
         refreshActualStatus();
       }
 
+      function toggleCreatorBookmark() {
+        const card = lastCard();
+        if (!card) { actionStatus.textContent = "ERROR: add a card first."; return; }
+        const site = selectedSite();
+        const creator = card.querySelector("a[href*='/users/'], a[href*='/profiles/'], a[href*='/creators/'], a[href*='/authors/']");
+        const key = `${site}:${BookmarkFilterAdapters.normalizeCreatorUrl(creator?.href)}`;
+        if (bookmarks.has(key)) bookmarks.delete(key); else bookmarks.add(key);
+        dispatchToContent({ type: "BOOKMARKS_CHANGED" });
+        actionStatus.textContent = "Synthetic creator bookmark membership changed; dispatched actual BOOKMARKS_CHANGED.";
+        refreshActualStatus();
+      }
+
       function recycleCard() {
         const card = lastCard();
         if (!card) { actionStatus.textContent = "ERROR: add a card first."; return; }
         card.querySelector("a").href = urlFor(selectedSite(), `recycled-${nextId++}`);
         actionStatus.textContent = "Last card href recycled; production attribute observation will re-check it.";
+        refreshActualStatus();
+      }
+
+      function recycleCreator() {
+        const card = lastCard();
+        if (!card) { actionStatus.textContent = "ERROR: add a card first."; return; }
+        const creator = card.querySelector("a[href*='/users/'], a[href*='/profiles/'], a[href*='/creators/'], a[href*='/authors/']");
+        if (!creator) { actionStatus.textContent = "ERROR: last card has no creator link."; return; }
+        creator.href = creatorUrlFor(selectedSite(), `recycled-${nextId++}`);
+        actionStatus.textContent = "Last creator href recycled while media URL stayed unchanged; production matching should re-check it.";
         refreshActualStatus();
       }
 
@@ -300,8 +357,11 @@
       siteChoice.addEventListener("change", () => { updateSurfaceControl(); reloadHarness(); });
       surfaceChoice.addEventListener("change", reloadHarness);
       document.querySelector("#add-bookmarked").onclick = () => addCard(true);
+      document.querySelector("#add-creator").onclick = () => addCard(false, true);
       document.querySelector("#add-unbookmarked").onclick = () => addCard(false);
       document.querySelector("#change-bookmark").onclick = toggleBookmark;
+      document.querySelector("#toggle-creator").onclick = toggleCreatorBookmark;
+      document.querySelector("#recycle-creator").onclick = recycleCreator;
       document.querySelector("#recycle").onclick = recycleCard;
       document.querySelector("#remove-card").onclick = removeCard;
       document.querySelector("#toggle-filter").onclick = () => clickPopup(`#site-${selectedSite()}`, "ERROR: actual popup site toggle is not ready.");
