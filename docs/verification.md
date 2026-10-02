@@ -13,7 +13,9 @@ The live-layout notes are local Chrome DOM observations recorded for this verifi
 | Literotica header/navigation/story-body/series negatives | Negative structures are intentionally unfiltered | Header, navigation, story-body, and series negative fixtures passed | Not exercised; harness has no negative navigation path | No |
 | Literotica homepage, news, and promotions | Ambiguous/unverified; no safe positive claim | Not treated as a positive fixture | Not claimed | No |
 | Pornhub `/`, `/video/search`, and `/model/<handle>` capture surfaces | Yes - saved HTML inspected 2026-09-12; 65/61 homepage, 38/31 search, 29/25 creator card counts | Sanitized capture fixtures plus adapter and connected production tests passed | Not rerun for these captures | No; live/native behavior remains unverified |
-| XVideos | Live layout blocked and unverified | Existing synthetic legacy fixture | Local loopback synthetic creator-card smoke passed; not live-site evidence | No |
+| Literotica `/c/<category>` and `/authors/<handle>/works/stories` capture surfaces | Yes - saved HTML inspected 2026-09-30; 20/20 category and 16/16 author-list cards, all with author links | Sanitized capture fixtures plus adapter tests passed | Not run for these captures | No; live/native behavior remains unverified |
+| XVideos `/`, `/?k=<term>`, and `/<handle>` capture surfaces | Yes - saved HTML inspected 2026-09-30; 17/16 homepage, 31/27 search, 24/24 creator card counts | Sanitized capture fixtures plus adapter tests passed | Not run for these captures | No; live/native behavior remains unverified |
+| XVideos other surfaces | Live layout blocked and unverified | Existing synthetic legacy fixture | Local loopback synthetic creator-card smoke passed; not live-site evidence | No |
 | xHamster | Live layout blocked and unverified | Existing synthetic legacy fixture | Local loopback synthetic creator-card smoke passed; not live-site evidence | No |
 
 ## Harness boundaries
