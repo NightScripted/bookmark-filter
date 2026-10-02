@@ -27,6 +27,10 @@
   let scanning = false;
   const knownCandidates = new Set();
   const matched = new Set();
+  const creatorMatched = new Set();
+  const badgeByCard = new WeakMap();
+  const ownedBadgeNodes = new WeakSet();
+  const ownedBadgeRemovals = new WeakSet();
   let states = new WeakMap();
 
   function connected(element) { return Boolean(element && element.isConnected); }
@@ -43,6 +47,15 @@
     return count;
   }
 
+  function highlightedCount() {
+    if (!filterEnabled) return 0;
+    let count = 0;
+    creatorMatched.forEach((element) => {
+      if (connected(element) && element.classList.contains("bookmark-filter-creator-highlight") && !element.classList.contains("bookmark-filter-hidden")) count += 1;
+    });
+    return count;
+  }
+
   function connectedCount(set) {
     let count = 0;
     set.forEach((element) => { if (connected(element)) count += 1; });
@@ -50,9 +63,44 @@
   }
 
   function reveal(element) { if (element?.classList) element.classList.remove("bookmark-filter-hidden"); }
+  function clearHighlight(element) {
+    if (!element) return;
+    element.classList?.remove("bookmark-filter-creator-highlight");
+    const badge = badgeByCard.get(element);
+    if (badge) {
+      badgeByCard.delete(element);
+      if (badge.parentNode) {
+        ownedBadgeRemovals.add(badge);
+        badge.remove();
+      }
+    }
+  }
+  function setHighlight(element, isCreatorMatched) {
+    if (!element) return;
+    const enabled = filterEnabled && isCreatorMatched;
+    let badge = badgeByCard.get(element);
+    if (badge && !badge.isConnected) { badgeByCard.delete(element); badge = null; }
+    if (!enabled) {
+      clearHighlight(element);
+      return;
+    }
+    element.classList?.add("bookmark-filter-creator-highlight");
+    const label = matched.has(element) ? "Saved · Bookmarked creator" : "Bookmarked creator";
+    if (badge) { if (badge.textContent !== label) badge.textContent = label; }
+    else {
+      const node = element.ownerDocument.createElement("span");
+      node.className = "bookmark-filter-creator-badge";
+      node.setAttribute("data-bookmark-filter-owned", "creator-badge");
+      node.textContent = label;
+      ownedBadgeNodes.add(node);
+      badgeByCard.set(element, node);
+      element.append(node);
+    }
+  }
   function restoreAll() {
     matched.forEach(reveal);
-    knownCandidates.forEach((element) => { if (connected(element)) reveal(element); });
+    creatorMatched.forEach((element) => clearHighlight(element));
+    knownCandidates.forEach((element) => { if (connected(element)) { reveal(element); clearHighlight(element); } });
   }
   function isBusy() {
     return Boolean(scanning || scanTask || scanRoots.length || processing || candidateQueue.size || scheduled);
@@ -69,18 +117,31 @@
       status,
       recognizedCount: connectedCount(knownCandidates),
       matchedCount: connectedCount(matched),
+      creatorMatchedCount: connectedCount(creatorMatched),
+      highlightedCount: highlightedCount(),
       scanning: isBusy(),
       errorCode,
       surfaceVerification: surfaceVerification()
     };
   }
 
-  function apply(element, isMatched, requestGeneration, token, url) {
+  function apply(element, isMatched, isCreatorMatched, requestGeneration, token, url, creatorFingerprint) {
     const state = states.get(element);
-    if (!connected(element) || !state || state.generation !== requestGeneration || state.token !== token || state.url !== url) {
+    if (!connected(element)) {
       resetCandidate(element);
       return;
     }
+    if (!state) {
+      resetCandidate(element);
+      return;
+    }
+    if (state.generation !== requestGeneration || state.token !== token || state.url !== url || state.creatorFingerprint !== creatorFingerprint) {
+      return;
+    }
+    applyCurrent(element, isMatched, isCreatorMatched);
+  }
+
+  function applyCurrent(element, isMatched, isCreatorMatched) {
     if (isMatched) {
       matched.add(element);
       if (filterEnabled && !showHidden) element.classList.add("bookmark-filter-hidden");
@@ -89,13 +150,17 @@
       matched.delete(element);
       reveal(element);
     }
+    if (isCreatorMatched) creatorMatched.add(element); else creatorMatched.delete(element);
+    setHighlight(element, isCreatorMatched);
   }
 
   function resetCandidate(element) {
     knownCandidates.delete(element);
     matched.delete(element);
+    creatorMatched.delete(element);
     states.delete(element);
     reveal(element);
+    clearHighlight(element);
   }
 
   function scheduleScan() {
@@ -202,9 +267,11 @@
     if (!candidate || typeof candidate.url !== "string") { resetCandidate(element); return null; }
     knownCandidates.add(element);
     const token = `${requestGeneration.toString(36)}-${index.toString(36)}-${Math.random().toString(36).slice(2, 8)}`.slice(0, 120);
-    const state = { generation: requestGeneration, token, url: candidate.url };
+    const creatorUrls = Array.isArray(candidate.creatorUrls) ? candidate.creatorUrls.slice(0, 16) : [];
+    const creatorFingerprint = creatorUrls.map((url) => adapter.normalizeCreatorUrl(url)).filter(Boolean).sort().join("|");
+    const state = { generation: requestGeneration, token, url: candidate.url, creatorFingerprint };
     states.set(element, state);
-    return { element, candidate, token, url: candidate.url };
+    return { element, candidate, token, url: candidate.url, creatorUrls, creatorFingerprint };
   }
 
   function clearRetry() {
@@ -229,7 +296,7 @@
       response = await chrome.runtime.sendMessage({
         type: "GET_PAGE_MATCHES",
         siteId: adapter.id,
-        candidates: entries.map((entry) => ({ token: entry.token, url: entry.url }))
+        candidates: entries.map((entry) => ({ token: entry.token, url: entry.url, creatorUrls: entry.creatorUrls }))
       });
     } catch (_) { response = { error: "unavailable" }; }
     if (requestGeneration !== generation) return false;
@@ -245,16 +312,26 @@
     errorCode = null;
     filterEnabled = response.enabled !== false;
     if (!filterEnabled) restoreAll();
-    const matches = new Map((Array.isArray(response.matches) ? response.matches : []).map((match) => [match.token, match.matched === true]));
+    const matches = new Map((Array.isArray(response.matches) ? response.matches : []).map((match) => [match.token, {
+      media: match.mediaBookmarked === true || (match.mediaBookmarked === undefined && match.matched === true),
+      creator: match.creatorBookmarked === true
+    }]));
     for (const entry of entries) {
       const current = states.get(entry.element);
-      if (!connected(entry.element) || current?.generation !== requestGeneration || current.token !== entry.token) {
+      if (!connected(entry.element)) {
         resetCandidate(entry.element);
         continue;
       }
+      // A newer request for this element owns its state; an old response must
+      // not clear that newer in-flight state or its visual result.
+      if (!current) { resetCandidate(entry.element); continue; }
+      if (current.generation !== requestGeneration || current.token !== entry.token) continue;
       const currentCandidate = adapter.identifyCandidate(entry.element, contextUrl());
-      if (!currentCandidate || currentCandidate.url !== entry.url) { resetCandidate(entry.element); continue; }
-      apply(entry.element, matches.get(entry.token) === true, requestGeneration, entry.token, entry.url);
+      const currentCreatorUrls = Array.isArray(currentCandidate?.creatorUrls) ? currentCandidate.creatorUrls.slice(0, 16) : [];
+      const currentFingerprint = currentCreatorUrls.map((url) => adapter.normalizeCreatorUrl(url)).filter(Boolean).sort().join("|");
+      if (!currentCandidate || currentCandidate.url !== entry.url || currentFingerprint !== entry.creatorFingerprint) { resetCandidate(entry.element); continue; }
+      const match = matches.get(entry.token) || { media: false, creator: false };
+      apply(entry.element, match.media, match.creator, requestGeneration, entry.token, entry.url, entry.creatorFingerprint);
     }
     return true;
   }
@@ -318,6 +395,7 @@
     restoreAll();
     knownCandidates.clear();
     matched.clear();
+    creatorMatched.clear();
     states = new WeakMap();
     scan(document, true);
   }
@@ -350,9 +428,10 @@
   }
   function cleanDisconnected() {
     knownCandidates.forEach((element) => {
-      if (!connected(element)) { knownCandidates.delete(element); matched.delete(element); reveal(element); }
+      if (!connected(element)) { knownCandidates.delete(element); matched.delete(element); creatorMatched.delete(element); reveal(element); clearHighlight(element); }
     });
     matched.forEach((element) => { if (!connected(element)) matched.delete(element); });
+    creatorMatched.forEach((element) => { if (!connected(element)) creatorMatched.delete(element); });
   }
   function affectedCandidates(targets) {
     const affected = new Set();
@@ -394,13 +473,20 @@
     let relevant = false;
     for (const record of records) {
       if (record.type === "childList") {
+        const added = [...record.addedNodes];
+        const removedNodes = [...record.removedNodes];
+        const addedEmptyOrOwn = added.length === 0 || added.every((node) => ownedBadgeNodes.has(node));
+        const removedEmptyOrOwn = removedNodes.length === 0 || removedNodes.every((node) => ownedBadgeRemovals.has(node));
+        const actualOwnOperation = added.some((node) => ownedBadgeNodes.has(node)) || removedNodes.some((node) => ownedBadgeRemovals.has(node));
+        const ownTextMutation = ownedBadgeNodes.has(record.target);
+        if (ownTextMutation || (actualOwnOperation && addedEmptyOrOwn && removedEmptyOrOwn)) continue;
         relevant = true;
         if (record.removedNodes.length) removed = true;
         targets.add(record.target);
         record.addedNodes.forEach((node) => { if (isElement(node)) additions.push(node); });
       } else if (record.type === "attributes") {
         if (record.attributeName === "class") {
-          const withoutExtensionClass = (value) => String(value || "").split(/\s+/).filter((name) => name && name !== "bookmark-filter-hidden").sort().join(" ");
+          const withoutExtensionClass = (value) => String(value || "").split(/\s+/).filter((name) => name && !["bookmark-filter-hidden", "bookmark-filter-creator-highlight"].includes(name)).sort().join(" ");
           if (withoutExtensionClass(record.oldValue) === withoutExtensionClass(record.target.getAttribute("class"))) continue;
         }
         relevant = true;

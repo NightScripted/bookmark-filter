@@ -66,7 +66,11 @@ importScripts("../shared/url-utils.js", "../shared/protocol.js", "../content/ada
   }
 
   function emptyIndex() {
-    return { bySite: Object.fromEntries(adapters.all.map((adapter) => [adapter.id, new Set()])), total: 0, revision: 0 };
+    return {
+      bySite: Object.fromEntries(adapters.all.map((adapter) => [adapter.id, new Set()])),
+      creatorsBySite: Object.fromEntries(adapters.all.map((adapter) => [adapter.id, new Map()])),
+      total: 0, creatorTotal: 0, revision: 0
+    };
   }
 
   function buildIndex(tree) {
@@ -77,12 +81,22 @@ importScripts("../shared/url-utils.js", "../shared/protocol.js", "../content/ada
           const adapter = adapters.forUrl(node.url);
           const key = adapters.normalizeBookmarkUrl(node.url);
           if (adapter && key) next.bySite[adapter.id].add(key);
+          const creatorKey = adapters.normalizeCreatorUrl(node.url);
+          if (adapter && creatorKey) {
+            const creators = next.creatorsBySite[adapter.id];
+            const existing = creators.get(creatorKey) || { ids: new Set(), dateAdded: null };
+            if (node.id != null) existing.ids.add(String(node.id));
+            const dateAdded = node.dateAdded;
+            if (typeof dateAdded === "number" && Number.isFinite(dateAdded) && dateAdded >= 0 && (existing.dateAdded == null || dateAdded < existing.dateAdded)) existing.dateAdded = dateAdded;
+            creators.set(creatorKey, existing);
+          }
         }
         if (Array.isArray(node.children)) walk(node.children);
       }
     };
     walk(tree);
     next.total = Object.values(next.bySite).reduce((total, values) => total + values.size, 0);
+    next.creatorTotal = Object.values(next.creatorsBySite).reduce((total, values) => total + values.size, 0);
     return next;
   }
 
@@ -150,9 +164,22 @@ importScripts("../shared/url-utils.js", "../shared/protocol.js", "../content/ada
     const currentSettings = await getSettings();
     const currentIndex = index || await rebuildIndex();
     const keys = currentIndex.bySite[message.siteId] || new Set();
+    const creatorKeys = currentIndex.creatorsBySite[message.siteId] || new Map();
     const matches = message.candidates.map((candidate) => {
-      const normalized = adapters.normalizeBookmarkUrl(candidate.url);
-      return { token: candidate.token, matched: Boolean(normalized && keys.has(normalized)) };
+      const candidateAdapter = adapters.forUrl(candidate.url);
+      const normalized = candidateAdapter?.id === message.siteId ? candidateAdapter.normalizeBookmarkUrl(candidate.url) : null;
+      let creatorBookmarked = false;
+      const creatorUrls = Array.isArray(candidate.creatorUrls) ? candidate.creatorUrls : [];
+      if (normalized) {
+        for (const creatorUrl of creatorUrls) {
+          const creatorAdapter = adapters.forUrl(creatorUrl);
+          if (!creatorAdapter || creatorAdapter.id !== message.siteId) continue;
+          const creatorKey = creatorAdapter.normalizeCreatorUrl(creatorUrl);
+          if (creatorKey && creatorKeys.has(creatorKey)) { creatorBookmarked = true; break; }
+        }
+      }
+      const mediaBookmarked = Boolean(normalized && keys.has(normalized));
+      return { token: candidate.token, matched: mediaBookmarked, mediaBookmarked, creatorBookmarked };
     });
     return { enabled: currentSettings.enabledBySite[message.siteId] !== false, indexReady: true, matches, revision: currentIndex.revision };
   }
@@ -169,7 +196,7 @@ importScripts("../shared/url-utils.js", "../shared/protocol.js", "../content/ada
   }
 
   function indexStatus(retry = false) {
-    if (index) return { ready: true, total: index.total, revision: index.revision, status: "ready", errorCode: null };
+    if (index) return { ready: true, total: index.total, creatorTotal: index.creatorTotal, revision: index.revision, status: "ready", errorCode: null };
     if (retry) lastRebuildFailure = null;
     if (lastRebuildFailure) return { ready: false, total: 0, revision: 0, status: "error", errorCode: lastRebuildFailure.errorCode };
     if (!rebuildPromise) rebuildIndex().catch(() => undefined);

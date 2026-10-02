@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { contentRuntime, wait } = require("./helpers/runtime.js");
+const { contentRuntime, wait, waitFor } = require("./helpers/runtime.js");
 
 function card(id) {
   return `<article class="pcVideoListItem" data-video-id="${id}"><a href="https://www.pornhub.com/video/title-${id}">${id}</a></article>`;
@@ -14,6 +14,55 @@ function matcher(bookmarked) {
     matches: message.candidates.map((candidate) => ({ token: candidate.token, matched: bookmarked.has(candidate.url) }))
   });
 }
+
+function creatorMatcher(bookmarked) {
+  const adapters = require("../content/adapters.js");
+  return (message) => ({ indexReady: true, enabled: true, revision: 1, matches: message.candidates.map((candidate) => ({
+    token: candidate.token,
+    mediaBookmarked: false,
+    creatorBookmarked: (candidate.creatorUrls || []).some((url) => adapters.normalizeCreatorUrl(url) === adapters.normalizeCreatorUrl(bookmarked))
+  })) });
+}
+
+test("content highlights explicit bookmarked creators, reports counts, and removes stale badges", async () => {
+  const creator = "https://www.pornhub.com/users/Casey";
+  const runtime = await contentRuntime({ html: `<article class="pcVideoListItem"><a href="https://www.pornhub.com/video/title-new">media</a><a href="${creator}">creator</a></article>`, response: creatorMatcher(creator) });
+  const element = runtime.dom.window.document.querySelector("article");
+  assert.equal(element.classList.contains("bookmark-filter-creator-highlight"), true);
+  assert.equal(element.querySelector(".bookmark-filter-creator-badge").textContent, "Bookmarked creator");
+  let status = await runtime.message({ type: "GET_PAGE_STATUS" });
+  assert.equal(status.creatorMatchedCount, 1);
+  assert.equal(status.highlightedCount, 1);
+  element.querySelectorAll("a")[1].href = "https://www.pornhub.com/users/Other";
+  await runtime.settle();
+  status = await runtime.message({ type: "GET_PAGE_STATUS" });
+  assert.equal(status.creatorMatchedCount, 0);
+  assert.equal(element.querySelector(".bookmark-filter-creator-badge"), null);
+  runtime.dom.window.close();
+});
+
+test("a stale same-media creator response cannot restore a replaced creator badge", async () => {
+  const oldCreator = "https://www.pornhub.com/users/Casey";
+  let calls = 0;
+  let release;
+  const runtime = await contentRuntime({
+    html: `<article class="pcVideoListItem"><a href="https://www.pornhub.com/video/title-new">media</a><a href="${oldCreator}">creator</a></article>`,
+    response: async (message) => {
+      calls += 1;
+      if (calls === 2) return new Promise((resolve) => { release = () => resolve({ indexReady: true, enabled: true, matches: message.candidates.map((candidate) => ({ token: candidate.token, creatorBookmarked: true })) }); });
+      return { indexReady: true, enabled: true, matches: message.candidates.map((candidate) => ({ token: candidate.token, creatorBookmarked: false })) };
+    }
+  });
+  await runtime.message({ type: "BOOKMARKS_CHANGED" });
+  await waitFor(() => typeof release === "function");
+  runtime.dom.window.document.querySelectorAll("a")[1].href = "https://www.pornhub.com/users/Other";
+  release();
+  await runtime.settle();
+  const element = runtime.dom.window.document.querySelector("article");
+  assert.equal(element.querySelector(".bookmark-filter-creator-badge"), null);
+  assert.equal((await runtime.message({ type: "GET_PAGE_STATUS" })).highlightedCount, 0);
+  runtime.dom.window.close();
+});
 
 test("content hides certified cards, handles insertion, recycling, removal, and live count", async () => {
   const bookmarked = new Set(["https://www.pornhub.com/video/title-saved"]);

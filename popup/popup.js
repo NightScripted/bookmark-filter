@@ -88,6 +88,7 @@
   }
 
   function surfaceMessage(value) {
+    if (value === "saved-html-inspected") return "Saved page HTML inspected; live extension behavior not yet verified.";
     if (value === "live-layout-inspected") return "Live layout inspected; native extension behavior not yet verified.";
     if (value === "experimental") return "Experimental layout verification; filtering may be incomplete.";
     if (value === "unverified") return "Site layout is unverified; filtering may be incomplete.";
@@ -103,9 +104,17 @@
     const hiddenText = hidden == null ? "—" : String(hidden);
     const recognized = numberOrNull(state.recognizedCount);
     const matched = numberOrNull(state.matchedCount);
+    const creators = numberOrNull(state.creatorMatchedCount);
+    const highlighted = numberOrNull(state.highlightedCount);
+    const creatorCount = creators == null ? 0 : creators;
     if (recognized === 0) return `No recognized cards (page may be empty or unsupported). Hidden on this page: ${hiddenText}.`;
-    if (recognized != null && matched === 0) return `No bookmark matches. Hidden on this page: ${hiddenText}.`;
-    if (matched != null) return `Bookmark matches: ${matched}. Hidden on this page: ${hiddenText}.`;
+    if (recognized != null && matched === 0 && creatorCount === 0) return `No bookmark matches. Hidden on this page: ${hiddenText}.`;
+    if (matched != null || creators != null) {
+      const mediaText = matched == null ? "saved media: —" : `saved media: ${matched}`;
+      const creatorText = creators == null ? "cards from bookmarked creators: —" : `cards from bookmarked creators: ${creators}`;
+      const highlightText = highlighted == null ? "" : `; Items from bookmarked creators highlighted: ${highlighted}`;
+      return `${mediaText}; ${creatorText}${highlightText}. Hidden on this page: ${hiddenText}.`;
+    }
     return `Hidden on this page: ${hiddenText}.`;
   }
 
@@ -137,13 +146,16 @@
     pageHasError = stateName === "error" || Boolean(state.error);
     const recognized = numberOrNull(state.recognizedCount);
     const matched = numberOrNull(state.matchedCount);
+    const creators = numberOrNull(state.creatorMatchedCount);
+    const creatorCount = creators == null ? 0 : creators;
 
     let message = `${name}: filtering ready.`;
     if (pageHasError) message = `${name}: filtering unavailable${codeSuffix(state.errorCode)}.`;
     else if (state.enabled === false) message = `${name}: filtering disabled.`;
     else if (scanning) message = `${name}: scanning this page…`;
     else if (recognized === 0) message = "No recognized cards (page may be empty or unsupported).";
-    else if (recognized != null && matched === 0) message = "No bookmark matches.";
+    else if (recognized != null && matched === 0 && creatorCount === 0) message = "No bookmark matches.";
+    else if (creatorCount > 0 && matched === 0) message = "Bookmarked creator cards highlighted.";
 
     if (page) {
       page.textContent = message;
@@ -181,7 +193,8 @@
     else if (stateName === "building") indexStatus.textContent = "Bookmark index is being prepared…";
     else {
       const total = numberOrNull(state.total);
-      indexStatus.textContent = total == null ? "Bookmark index ready." : `Bookmark index ready (${total} saved items).`;
+      const creatorTotal = numberOrNull(state.creatorTotal);
+      indexStatus.textContent = total == null ? "Bookmark index ready." : creatorTotal == null ? `Bookmark index ready (${total} saved items).` : `Bookmark index ready (${total} saved items; ${creatorTotal} bookmarked creators).`;
     }
     setRetryVisibility();
   }

@@ -32,6 +32,7 @@
 
   const MAX_CLASSIFICATION_NODES = 2048;
   const MAX_CLASSIFICATION_LINKS = 256;
+  const MAX_CREATOR_URLS = 16;
 
   function hrefsIn(container, baseUrl) {
     const anchors = [];
@@ -77,6 +78,25 @@
     if (keys.size !== 1) return null;
     const first = keys.values().next().value;
     return { url: first.href, key: first.identity.key };
+  }
+
+  function creatorLinks(container, identityFromUrl, baseUrl) {
+    const links = hrefsIn(container, baseUrl);
+    if (!links.bounded) return [];
+    const found = [];
+    const keys = new Set();
+    for (const anchor of links.anchors) {
+      const raw = baseUrl ? (anchor.getAttribute?.("href") || anchor.href) : (anchor.href || anchor.getAttribute?.("href"));
+      let resolved = raw;
+      try { if (baseUrl) resolved = new URL(raw, baseUrl).href; } catch (_) { resolved = raw; }
+      const url = asUrl(resolved);
+      const identity = url && identityFromUrl(url, anchor);
+      if (!identity || keys.has(identity.key)) continue;
+      keys.add(identity.key);
+      found.push(url.href);
+      if (found.length >= MAX_CREATOR_URLS) break;
+    }
+    return found;
   }
 
   function selectorMatches(element, selectors) {
@@ -133,7 +153,7 @@
   }
 
   function routeAdapter(config) {
-    const { id, domains, selectors, contentIdentity, isDetail, candidateMatches } = config;
+    const { id, domains, selectors, contentIdentity, creatorIdentity, isDetail, candidateMatches } = config;
     const matches = candidateMatches || ((element) => selectorMatches(element, selectors));
     return {
       id,
@@ -174,12 +194,19 @@
         if (!this.matchesCandidate(container, contextUrl)) return null;
         if (hasNestedEligibleContainer(container, (element) => matches(element, contextUrl), contentIdentity, contextUrl)) return null;
         const match = contentLinks(container, contentIdentity, contextUrl);
-        return match ? token(id, match.key, match.url) : null;
+        if (!match) return null;
+        const creatorUrls = creatorIdentity ? creatorLinks(container, creatorIdentity, contextUrl) : [];
+        return { ...token(id, match.key, match.url), creatorUrls };
       },
       normalizeBookmarkUrl(value) {
         const url = asUrl(value);
         if (!url || !this.isSupportedPage(url)) return null;
         return contentIdentity(url)?.key || null;
+      },
+      normalizeCreatorUrl(value) {
+        const url = asUrl(value);
+        if (!url || !this.isSupportedPage(url) || !creatorIdentity) return null;
+        return creatorIdentity(url)?.key || null;
       }
     };
   }
@@ -207,14 +234,23 @@
     return match ? { key: identityKey("pornhub", "id", match[1], url) } : null;
   }
 
-  function xvideosIdentity(url) {
+  function xvideosVideoId(url) {
     if (!matchesDomain(url, ["xvideos.com"])) return null;
-    // Supported synthetic/legacy conventions only: /video123/slug,
-    // /video.ID/slug, and /video-ID/slug. Other surfaces stay visible.
-    const match = url.pathname.match(/^\/video(\d+|\.([a-z0-9]+)|-([a-z0-9]+))(?:\/[^/]*)?\/?$/i);
-    if (!match) return null;
-    const id = match[1].replace(/^[-.]/, "");
-    return { key: identityKey("xvideos", "id", id, url) };
+    // /video123/slug, /video.ID/slug, and /video-ID/slug. Saved 2026-09-30
+    // homepage suggestions add opaque segments (/video.ID/56182174/0/slug)
+    // and creator pages template /video.ID/THUMBNUM/slug; all share the ID.
+    const match = url.pathname.match(/^\/video(\d+|\.([a-z0-9]+)|-([a-z0-9]+))(?:\/[^/]*){0,3}\/?$/i);
+    return match ? match[1].replace(/^[-.]/, "") : null;
+  }
+
+  function xvideosIdentity(url) {
+    let id = xvideosVideoId(url);
+    // Creator-page cards link through a click-tracking redirect that carries
+    // the same video ID: /prof-video-click/upload/<handle>/<ID>/<slug>.
+    if (!id && matchesDomain(url, ["xvideos.com"])) {
+      id = url.pathname.match(/^\/prof-video-click\/upload\/[A-Za-z0-9_-]+\/([a-z0-9]+)(?:\/[^/]*){0,2}\/?$/i)?.[1] || null;
+    }
+    return id ? { key: identityKey("xvideos", "id", id, url) } : null;
   }
 
   function xhamsterIdentity(url) {
@@ -231,6 +267,61 @@
     return { key: normalizedContentUrl("literotica", url) };
   }
 
+  function routeCreatorIdentity(siteId, routes, value) {
+    if (!matchesDomain(value, siteId === "pornhub" ? ["pornhub.com"] : siteId === "xvideos" ? ["xvideos.com"] : ["xhamster.com"])) return null;
+    const pathname = value.pathname.replace(/\/+$/, "") || "/";
+    for (const [family, pattern] of routes) {
+      const match = pathname.match(pattern);
+      if (match) return { key: `${siteId}:creator:${family}:${match[1]}` };
+    }
+    return null;
+  }
+
+  function pornhubCreatorIdentity(url) {
+    return routeCreatorIdentity("pornhub", [
+      ["users", /^\/(?:users)\/([A-Za-z0-9_-]+)$/],
+      ["channels", /^\/(?:channels)\/([A-Za-z0-9_-]+)$/],
+      ["model", /^\/(?:model)\/([A-Za-z0-9_-]+)(?:\/(?:videos|clips|photos|gifs|stream|playlists|about))?$/],
+      ["pornstar", /^\/(?:pornstar)\/([A-Za-z0-9_-]+)$/]
+    ], url);
+  }
+
+  // Root-level paths seen outside uploader links in the 2026-09-30 captures,
+  // plus a few known listing routes. These are never creator handles.
+  const XVIDEOS_RESERVED_ROOTS = new Set([
+    "account", "best", "change-country", "channels", "channels-index", "favorites", "gay", "history", "hits",
+    "lang", "my-feed", "new", "porn", "pornstars", "pornstars-index", "profiles", "profileslist", "red",
+    "search", "shemale", "tags", "trans", "verified", "videos-i-like"
+  ]);
+
+  function xvideosCreatorIdentity(url, anchor) {
+    const routed = routeCreatorIdentity("xvideos", [
+      ["profiles", /^\/(?:profiles)\/([A-Za-z0-9_-]+)$/],
+      ["amateur-channels", /^\/(?:amateur-channels)\/([A-Za-z0-9_-]+)$/],
+      ["channels", /^\/(?:channels)\/([A-Za-z0-9_-]+)$/]
+    ], url);
+    if (routed || !matchesDomain(url, ["xvideos.com"])) return routed;
+    const match = (url.pathname.replace(/\/+$/, "") || "/").match(/^\/([A-Za-z0-9_-]+)$/);
+    if (!match || XVIDEOS_RESERVED_ROOTS.has(match[1].toLowerCase())) return null;
+    // Root-level channel handles (/kate_koss1) share a namespace with site
+    // routes, so inside a card only the uploader line counts.
+    if (anchor && !anchor.closest?.("p.metadata")) return null;
+    return { key: `xvideos:creator:handle:${match[1]}` };
+  }
+
+  function xhamsterCreatorIdentity(url) {
+    return routeCreatorIdentity("xhamster", [
+      ["users", /^\/(?:users)\/([A-Za-z0-9_-]+)$/],
+      ["creators", /^\/(?:creators)\/([A-Za-z0-9_-]+)$/]
+    ], url);
+  }
+
+  function literoticaCreatorIdentity(url) {
+    if (!matchesDomain(url, ["literotica.com"])) return null;
+    const match = url.pathname.match(/^\/authors\/([A-Za-z0-9_-]+)(?:\/works(?:\/stories)?)?\/?$/i);
+    return match ? { key: `literotica:creator:authors:${match[1]}` } : null;
+  }
+
   function literoticaHost(element, contextUrl) {
     return hostOf(contextUrl) || element?.ownerDocument?.location?.hostname?.toLowerCase() || "";
   }
@@ -243,13 +334,22 @@
     return "other";
   }
 
+  function literoticaWorkCard(element) {
+    return element.matches("article._card_1epno_16") && Boolean(element.querySelector?.("div._content_1epno_58 > h3._title_1epno_54 > a._title_link_1epno_69"));
+  }
+
   function literoticaCandidateMatches(element, contextUrl) {
     const surface = literoticaSurface(element, contextUrl);
     if (surface === "search") return element.matches("div.panel.ai_gJ") && Boolean(element.querySelector?.("div.ai_iG > a.ai_ii"));
-    if (surface === "tags") return element.matches("article._card_ohlxb_16") && Boolean(element.querySelector?.("div._content_ohlxb_56 > h3._title_ohlxb_52 > a"));
+    if (surface === "tags") return (element.matches("article._card_ohlxb_16") && Boolean(element.querySelector?.("div._content_ohlxb_56 > h3._title_ohlxb_52 > a"))) || (element.matches("article._card_1epno_16") && Boolean(element.querySelector?.("div._content_1epno_58 > h3._title_1epno_54 > a._title_link_1epno_69")));
     if (surface === "main") {
       const path = asUrl(contextUrl)?.pathname || element.ownerDocument.location.pathname;
-      if (path === "/top/stories" || path === "/top/stories/") return element.matches("article._card_ohlxb_16");
+      if (path === "/top/stories" || path === "/top/stories/") return element.matches("article._card_ohlxb_16, article._card_1epno_16._most_read_1epno_670");
+      // Category listings and author story lists reuse the tag-page work card.
+      // Category sidebars (div._item_1rmtm_97) and the homepage news submenu
+      // are not eligible.
+      if (/^\/c\/[^/]+\/?$/.test(path)) return literoticaWorkCard(element) && Boolean(element.parentElement?.matches("div._list_1epno_6"));
+      if (/^\/authors\/[^/]+\/works\/stories\/?$/.test(path)) return literoticaWorkCard(element) && Boolean(element.parentElement?.matches("div._part_row_1epno_512, div._list_1epno_6"));
       if (/^\/s\/[^/]+(?:\/[^/]*)?\/?$/i.test(path)) {
         return element.matches("div._item_1m9b4_7") && element.parentElement?.matches("div._widget_list_1m9b4_1") && Boolean(element.querySelector?.(":scope > a._widget_link_1m9b4_62"));
       }
@@ -262,20 +362,37 @@
       id: "pornhub", domains: ["pornhub.com"],
       selectors: [".pcVideoListItem", ".videoPreview"],
       contentIdentity: pornhubIdentity,
+      creatorIdentity: pornhubCreatorIdentity,
       isDetail: (url) => Boolean(pornhubIdentity(url)),
-      verification: "experimental-legacy-selector; live layout unverified"
+      verification: "saved-html-inspected 2026-09-12; live/native extension behavior unverified",
+      surfaceVerification(value) {
+        const url = asUrl(value);
+        const host = url?.hostname?.toLowerCase();
+        if (host !== "pornhub.com" && host !== "www.pornhub.com") return "experimental";
+        if (url.pathname === "/" || /^\/video\/search\/?$/.test(url.pathname) || /^\/model\/[A-Za-z0-9_-]+$/.test(url.pathname.replace(/\/$/, ""))) return "saved-html-inspected";
+        return "experimental";
+      }
     }),
     routeAdapter({
       id: "xvideos", domains: ["xvideos.com"],
       selectors: [".thumb-block", ".video-card"],
       contentIdentity: xvideosIdentity,
-      isDetail: (url) => Boolean(xvideosIdentity(url)),
-      verification: "experimental-legacy-selector; live layout unverified"
+      creatorIdentity: xvideosCreatorIdentity,
+      isDetail: (url) => Boolean(xvideosVideoId(url)),
+      verification: "saved-html-inspected 2026-09-30 homepage/search/creator; other surfaces experimental; live/native extension behavior unverified",
+      surfaceVerification(value) {
+        const url = asUrl(value);
+        const host = url?.hostname?.toLowerCase();
+        if (host !== "xvideos.com" && host !== "www.xvideos.com") return "experimental";
+        if (url.pathname === "/" || xvideosCreatorIdentity(url)?.key.startsWith("xvideos:creator:handle:")) return "saved-html-inspected";
+        return "experimental";
+      }
     }),
     routeAdapter({
       id: "xhamster", domains: ["xhamster.com"],
       selectors: [".video-card", ".video-thumb"],
       contentIdentity: xhamsterIdentity,
+      creatorIdentity: xhamsterCreatorIdentity,
       isDetail: (url) => Boolean(xhamsterIdentity(url)),
       verification: "experimental-legacy-selector; live layout unverified"
     }),
@@ -284,17 +401,20 @@
       // Search, tag, top-story, and detail recommendation selectors were
       // verified against the current live surfaces. The old li submenu and
       // homepage navigation selectors are intentionally not eligible.
-      selectors: ["div.panel.ai_gJ", "article._card_ohlxb_16", "div._item_1m9b4_7"],
+      selectors: ["div.panel.ai_gJ", "article._card_ohlxb_16", "article._card_1epno_16", "div._item_1m9b4_7"],
       candidateMatches: literoticaCandidateMatches,
       contentIdentity: literoticaIdentity,
+      creatorIdentity: literoticaCreatorIdentity,
       isDetail: (url) => Boolean(literoticaIdentity(url)),
-      verification: "live-layout-inspected 2026-09-08 search/tag/top/detail selectors; /s/ content links only",
+      verification: "live-layout-inspected 2026-09-12 search/tag/top selectors; saved-html-inspected 2026-09-30 category/author selectors; legacy detail selector retained; /s/ content links only",
       surfaceVerification(value) {
         const host = hostOf(value);
         if (host === "search.literotica.com" || host === "tags.literotica.com") return "live-layout-inspected";
         if (host === "literotica.com" || host === "www.literotica.com") {
           const url = asUrl(value);
-          if (url && (url.pathname === "/top/stories" || url.pathname === "/top/stories/" || /^\/s\/[^/]+(?:\/[^/]*)?\/?$/i.test(url.pathname))) return "live-layout-inspected";
+          if (url && (url.pathname === "/top/stories" || url.pathname === "/top/stories/")) return "live-layout-inspected";
+          if (url && (/^\/c\/[^/]+\/?$/.test(url.pathname) || /^\/authors\/[^/]+\/works\/stories\/?$/.test(url.pathname))) return "saved-html-inspected";
+          if (url && /^\/s\/[^/]+(?:\/[^/]*)?\/?$/i.test(url.pathname)) return "experimental";
         }
         return "unverified";
       }
@@ -311,6 +431,10 @@
     normalizeBookmarkUrl(value) {
       const adapter = this.forUrl(value);
       return adapter ? adapter.normalizeBookmarkUrl(value) : null;
+    },
+    normalizeCreatorUrl(value) {
+      const adapter = this.forUrl(value);
+      return adapter ? adapter.normalizeCreatorUrl(value) : null;
     }
   };
   if (typeof module !== "undefined") module.exports = root.BookmarkFilterAdapters;

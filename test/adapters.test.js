@@ -17,10 +17,47 @@ test("sanitized fixtures include the observed Literotica positive and negative s
 
 test("adapter metadata distinguishes live-inspected and experimental surfaces", () => {
   assert.match(adapters.byId.literotica.verification, /live-layout-inspected/);
-  for (const id of ["pornhub", "xvideos", "xhamster"]) {
+  assert.match(adapters.byId.pornhub.verification, /saved-html-inspected/);
+  for (const id of ["xvideos", "xhamster"]) {
     assert.match(adapters.byId[id].verification, /experimental/);
     assert.match(adapters.byId[id].verification, /unverified/);
   }
+});
+
+test("creator URLs use explicit route families and Literotica author aliases", () => {
+  const cases = [
+    ["pornhub", "https://www.pornhub.com/users/Casey", "pornhub:creator:users:Casey"],
+    ["pornhub", "https://www.pornhub.com/channels/Casey/", "pornhub:creator:channels:Casey"],
+    ["xvideos", "https://www.xvideos.com/amateur-channels/Casey?tab=videos", "xvideos:creator:amateur-channels:Casey"],
+    ["xhamster", "https://xhamster.com/creators/Casey#bio", "xhamster:creator:creators:Casey"],
+    ["literotica", "https://www.literotica.com/authors/Casey", "literotica:creator:authors:Casey"],
+    ["literotica", "https://www.literotica.com/authors/Casey/works/stories", "literotica:creator:authors:Casey"]
+  ];
+  for (const [site, url, expected] of cases) assert.equal(adapters.byId[site].normalizeCreatorUrl(url), expected);
+  const modelTabs = ["videos", "clips", "photos", "gifs", "stream", "playlists", "about"];
+  for (const tab of modelTabs) {
+    for (const suffix of ["", "/", "?o=mr", "#bio", "/?o=mr#bio"]) {
+      assert.equal(adapters.normalizeCreatorUrl(`https://www.pornhub.com/model/Casey/${tab}${suffix}`), "pornhub:creator:model:Casey");
+    }
+  }
+  for (const url of [
+    "https://www.pornhub.com/users/Casey/bio",
+    "https://www.pornhub.com/model/Casey/unknown",
+    "https://www.pornhub.com/model/Casey/stream/activity",
+    "https://www.pornhub.com/model/Casey/videos/more",
+    "https://pornhub.example/model/Casey/videos",
+    "https://www.xvideos.com/tag/Casey",
+    "https://example.com/users/Casey",
+    "javascript:alert(1)"
+  ]) assert.equal(adapters.normalizeCreatorUrl(url), null);
+  assert.notEqual(adapters.normalizeCreatorUrl("https://www.pornhub.com/model/Casey/videos"), adapters.normalizeCreatorUrl("https://www.pornhub.com/model/Casey2/videos"));
+  assert.notEqual(adapters.normalizeCreatorUrl("https://www.pornhub.com/model/Casey/videos"), adapters.normalizeCreatorUrl("https://www.pornhub.com/users/Casey"));
+});
+
+test("recognized cards expose deduplicated same-site creator URLs", () => {
+  const document = new JSDOM('<article class="pcVideoListItem"><a href="/video/title-abc">media</a><a href="/users/Casey">creator</a><a href="/users/Casey?tab=videos">same creator</a><a href="/channels/Other">other creator</a></article>', { url: "https://www.pornhub.com/videos" }).window.document;
+  const candidate = adapters.byId.pornhub.identifyCandidate(document.querySelector("article"), document.location.href);
+  assert.deepEqual(candidate.creatorUrls, ["https://www.pornhub.com/users/Casey", "https://www.pornhub.com/channels/Other"]);
 });
 
 test("legacy fixtures scan only single-key certified cards", () => {

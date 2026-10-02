@@ -111,6 +111,7 @@ test("popup explains error, empty, unmatched, scanning, disabled, unverified, an
     [{ recognizedCount: 4, matchedCount: 0 }, "No bookmark matches", "No bookmark matches"],
     [{ enabled: false }, "filtering disabled", "Filtering disabled; hidden cards are shown"],
     [{ status: "indexing", scanning: true }, "scanning this page", "Scanning this page"],
+    [{ surfaceVerification: "saved-html-inspected" }, "filtering ready", "Saved page HTML inspected; live extension behavior not yet verified"],
     [{ surfaceVerification: "live-layout-inspected" }, "filtering ready", "native extension behavior not yet verified"]
   ];
   for (const [overrides, pageText, secondaryText] of cases) {
