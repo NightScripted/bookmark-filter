@@ -256,7 +256,12 @@
   function xhamsterIdentity(url) {
     if (!matchesDomain(url, ["xhamster.com"])) return null;
     const match = url.pathname.match(/^\/videos\/[^/]+-([a-z0-9]+)(?:\.html)?\/?$/i);
-    return match ? { key: identityKey("xhamster", "id", match[1], url) } : null;
+    if (match) return { key: identityKey("xhamster", "id", match[1], url) };
+    // Saved 2026-10-13 listings mix /shorts/<slug>-<id> moment cards into the
+    // video grid. Whether a short shares content with a /videos/ ID is
+    // unverified, so shorts keep their own key family.
+    const short = url.pathname.match(/^\/shorts\/[^/]+-([a-z0-9]+)\/?$/i);
+    return short ? { key: identityKey("xhamster", "short", short[1], url) } : null;
   }
 
   function literoticaIdentity(url) {
@@ -309,11 +314,24 @@
     return { key: `xvideos:creator:handle:${match[1]}` };
   }
 
+  // Listing routes seen in the 2026-10-13 captures that share the creator
+  // namespaces (/creators/all/countries, /creators/contest/naoc,
+  // /creators/videos/naoc, /pornstars/all/countries, /users/profiles/<h>).
+  const XHAMSTER_RESERVED_HANDLES = new Set(["all", "contest", "videos", "countries", "profiles"]);
+
   function xhamsterCreatorIdentity(url) {
-    return routeCreatorIdentity("xhamster", [
-      ["users", /^\/(?:users)\/([A-Za-z0-9_-]+)$/],
-      ["creators", /^\/(?:creators)\/([A-Za-z0-9_-]+)$/]
+    // Uploader links carry /shorts and /videos tabs; owner pages paginate
+    // with /<n>. Other tabs (/recommended, /full-length, /blog) stay distinct.
+    const routed = routeCreatorIdentity("xhamster", [
+      ["users", /^\/users\/([A-Za-z0-9_-]+)(?:\/videos)?$/],
+      ["user-profiles", /^\/users\/profiles\/([A-Za-z0-9_-]+)(?:\/videos)?$/],
+      ["creators", /^\/creators\/([A-Za-z0-9_-]+)(?:\/shorts|\/\d+)?$/],
+      ["channels", /^\/channels\/([A-Za-z0-9_-]+)(?:\/shorts|\/\d+)?$/],
+      ["pornstars", /^\/pornstars\/([A-Za-z0-9_-]+)(?:\/shorts|\/\d+)?$/]
     ], url);
+    if (!routed) return null;
+    const handle = routed.key.slice(routed.key.lastIndexOf(":") + 1);
+    return XHAMSTER_RESERVED_HANDLES.has(handle.toLowerCase()) ? null : routed;
   }
 
   function literoticaCreatorIdentity(url) {
@@ -390,11 +408,22 @@
     }),
     routeAdapter({
       id: "xhamster", domains: ["xhamster.com"],
+      // Saved 2026-10-13 cards are div.thumb-list__item.video-thumb; .video-card
+      // is the legacy synthetic selector.
       selectors: [".video-card", ".video-thumb"],
       contentIdentity: xhamsterIdentity,
       creatorIdentity: xhamsterCreatorIdentity,
       isDetail: (url) => Boolean(xhamsterIdentity(url)),
-      verification: "experimental-legacy-selector; live layout unverified"
+      verification: "saved-html-inspected 2026-10-13 homepage/search/channel/pornstar; other surfaces experimental; live/native extension behavior unverified",
+      surfaceVerification(value) {
+        const url = asUrl(value);
+        const host = url?.hostname?.toLowerCase();
+        if (host !== "xhamster.com" && host !== "www.xhamster.com") return "experimental";
+        const path = url.pathname.replace(/\/+$/, "") || "/";
+        if (path === "/" || /^\/search\/[^/]+$/.test(path)) return "saved-html-inspected";
+        if (/^\/(?:channels|pornstars)\//.test(path) && xhamsterCreatorIdentity(url)) return "saved-html-inspected";
+        return "experimental";
+      }
     }),
     routeAdapter({
       id: "literotica", domains: ["literotica.com"],
